@@ -45,6 +45,27 @@ func unmaskPayload(length int, reader *bufio.Reader) ([]byte, error) {
 	return payload, nil
 }
 
+func sendCloseFrame(code uint16, reason string, conn net.Conn) error {
+	fmt.Println(reason)
+
+	codeLen := 2
+
+	payload := make([]byte, codeLen+len(reason))
+	payload[0] = byte(code >> 8)
+	payload[1] = byte(code)
+	copy(payload[2:], []byte(reason))
+
+	closeFrame := []byte{0x88, byte(len(payload))}
+
+	closeFrame = append(closeFrame, payload...)
+
+	_, err := conn.Write(closeFrame)
+	if err != nil {
+		return fmt.Errorf("error sending close frame %w", err)
+	}
+	return nil
+}
+
 func handleWebSocket(conn net.Conn) {
 	defer conn.Close()
 
@@ -52,12 +73,12 @@ func handleWebSocket(conn net.Conn) {
 	for {
 		firstByte, err := reader.ReadByte() // 1st byte read
 		if err != nil {
-			fmt.Println("error reading frame", err)
+			sendCloseFrame(1001, err.Error(), conn)
 			break
 		}
 
 		if firstByte != textFrameByte {
-			fmt.Println("only text type is supported")
+			sendCloseFrame(1001, "only text type is supported", conn)
 			break
 		}
 
@@ -66,14 +87,14 @@ func handleWebSocket(conn net.Conn) {
 		// the rest (7) have the length of the payload
 		payloadLenByte, err := reader.ReadByte() // 2nd byte read
 		if err != nil {
-			fmt.Println("error reading payload length", err)
+			sendCloseFrame(1001, err.Error(), conn)
 			break
 		}
 		payloadLen := int(payloadLenByte & 0x7F) // here we access the length (7 bits from the byte)
 
 		payload, err := unmaskPayload(payloadLen, reader) // 3rd to 6th read (mask)
 		if err != nil {
-			fmt.Println(err)
+			sendCloseFrame(1001, err.Error(), conn)
 			break
 		}
 
@@ -84,7 +105,7 @@ func handleWebSocket(conn net.Conn) {
 		responseFrame := append([]byte{textFrameByte, byte(len(response))}, []byte(response)...)
 		_, err = conn.Write(responseFrame)
 		if err != nil {
-			fmt.Println("error writing to client", err)
+			sendCloseFrame(1001, err.Error(), conn)
 			break
 		}
 	}
