@@ -51,6 +51,7 @@ func sendCloseFrame(code uint16, reason string, conn net.Conn) error {
 	codeLen := 2
 
 	payload := make([]byte, codeLen+len(reason))
+	// big-endian: most important byte first
 	payload[0] = byte(code >> 8)
 	payload[1] = byte(code)
 	copy(payload[2:], []byte(reason))
