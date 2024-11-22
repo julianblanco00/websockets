@@ -5,14 +5,16 @@ import (
 	"crypto/sha1"
 	"encoding/base64"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
 )
 
 const (
-	guid          = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11" // RFC 6455 GUID
-	textFrameByte = 0x81
+	guid           = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11" // RFC 6455 GUID
+	textFrameByte  = 0x81
+	closeFrameByte = 0x88
 )
 
 // 0x81 -> 1000 0001 first bit (1) indicates that if it's the last frame of the message (FIN=1)
@@ -47,8 +49,6 @@ func unmaskPayload(length int, reader *bufio.Reader) ([]byte, error) {
 }
 
 func sendCloseFrame(code uint16, reason string, conn net.Conn) error {
-	fmt.Println(reason)
-
 	codeLen := 2
 
 	payload := make([]byte, codeLen+len(reason))
@@ -57,7 +57,13 @@ func sendCloseFrame(code uint16, reason string, conn net.Conn) error {
 	payload[1] = byte(code)
 	copy(payload[2:], []byte(reason))
 
-	closeFrame := []byte{0x88, byte(len(payload))}
+	closeFrame := []byte{0x88}
+
+	if len(payload) <= 125 {
+		closeFrame = append(closeFrame, byte(len(payload)))
+	} else {
+		return errors.New("invalid closing reason length")
+	}
 
 	closeFrame = append(closeFrame, payload...)
 
@@ -66,6 +72,36 @@ func sendCloseFrame(code uint16, reason string, conn net.Conn) error {
 		return fmt.Errorf("error sending close frame %w", err)
 	}
 	return nil
+}
+
+func sendToClient(conn net.Conn) error {
+	msg := "hello from server"
+	length := len(msg)
+	response := []byte(msg)
+
+	frame := []byte{textFrameByte}
+
+	if length <= 125 {
+		// response = [type, length, payload...]
+		frame = append(frame, byte(length))
+	} else if length <= 65535 {
+		frame = append(frame, 126)
+		lenBytes := make([]byte, 2)
+		binary.BigEndian.PutUint16(lenBytes, uint16(length))
+		// response = [type, extended length (16 bits), byte len (8 bits) * 2, payload...]
+		frame = append(frame, lenBytes...)
+	} else {
+		frame = append(frame, 127)
+		lenBytes := make([]byte, 8)
+		// response = [type, extended length (64 bits), byte len (8 bits) * 8 , payload...]
+		binary.BigEndian.PutUint64(lenBytes, uint64(length))
+		frame = append(frame, lenBytes...)
+	}
+
+	frame = append(frame, response...)
+
+	_, err := conn.Write(frame)
+	return err
 }
 
 func handleWebSocket(conn net.Conn) {
@@ -79,8 +115,8 @@ func handleWebSocket(conn net.Conn) {
 			break
 		}
 
-		if firstByte != textFrameByte {
-			sendCloseFrame(1001, "only text type is supported", conn)
+		if firstByte == closeFrameByte {
+			sendCloseFrame(1001, "connection close requested", conn)
 			break
 		}
 
@@ -127,7 +163,11 @@ func handleWebSocket(conn net.Conn) {
 				sendCloseFrame(1001, err, conn)
 				break
 			}
-			payloadLen = int(binary.BigEndian.Uint16(lenBytes))
+			if lenBytesN == 2 {
+				payloadLen = int(binary.BigEndian.Uint16(lenBytes))
+			} else {
+				payloadLen = int(binary.BigEndian.Uint64(lenBytes))
+			}
 		}
 
 		payload, err := unmaskPayload(payloadLen, reader) // 3rd to 6th read (mask)
@@ -139,9 +179,7 @@ func handleWebSocket(conn net.Conn) {
 		message := string(payload)
 		fmt.Println("received message: ", len(message))
 
-		response := "hello from server"
-		responseFrame := append([]byte{textFrameByte, byte(len(response))}, []byte(response)...)
-		_, err = conn.Write(responseFrame)
+		err = sendToClient(conn)
 		if err != nil {
 			sendCloseFrame(1001, err.Error(), conn)
 			break
