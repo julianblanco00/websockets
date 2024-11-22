@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"crypto/sha1"
 	"encoding/base64"
+	"encoding/binary"
 	"fmt"
 	"net"
 	"net/http"
@@ -93,6 +94,42 @@ func handleWebSocket(conn net.Conn) {
 		}
 		payloadLen := int(payloadLenByte & 0x7F) // here we access the length (7 bits from the byte)
 
+		// Payload length:  7 bits, 7+16 bits, or 7+64 bits
+		//
+		// The length of the "Payload data", in bytes: if 0-125, that is the
+		// payload length.  If 126, the following 2 bytes interpreted as a
+		// 16-bit unsigned integer are the payload length.  If 127, the
+		// following 8 bytes interpreted as a 64-bit unsigned integer (the
+		// most significant bit MUST be 0) are the payload length.  Multibyte
+		// length quantities are expressed in network byte order.  Note that
+		// in all cases, the minimal number of bytes MUST be used to encode
+		// the length, for example, the length of a 124-byte-long string
+		// can't be encoded as the sequence 126, 0, 124.  The payload length
+		// is the length of the "Extension data" + the length of the
+		// "Application data".  The length of the "Extension data" may be
+		// zero, in which case the payload length is the length of the
+		// "Application data".
+		var lenBytesN int
+		switch payloadLen {
+		case 126:
+			lenBytesN = 2
+		case 127:
+			lenBytesN = 8
+		default:
+			lenBytesN = 0
+		}
+
+		if lenBytesN != 0 {
+			lenBytes := make([]byte, lenBytesN)
+			_, err = reader.Read(lenBytes)
+			if err != nil {
+				err := fmt.Sprintf("error reading long payload %s", err)
+				sendCloseFrame(1001, err, conn)
+				break
+			}
+			payloadLen = int(binary.BigEndian.Uint16(lenBytes))
+		}
+
 		payload, err := unmaskPayload(payloadLen, reader) // 3rd to 6th read (mask)
 		if err != nil {
 			sendCloseFrame(1001, err.Error(), conn)
@@ -100,7 +137,7 @@ func handleWebSocket(conn net.Conn) {
 		}
 
 		message := string(payload)
-		fmt.Println("received message: ", message)
+		fmt.Println("received message: ", len(message))
 
 		response := "hello from server"
 		responseFrame := append([]byte{textFrameByte, byte(len(response))}, []byte(response)...)
