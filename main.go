@@ -20,5 +20,7 @@ func main() {
 		})
 	})
 
+	ws.Emit("emitting to all connected sockets...")
+
 	select {}
 }

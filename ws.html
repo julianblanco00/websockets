@@ -3,27 +3,30 @@
         hola
     </body>
     <script>
-        const ws = new WebSocket('ws://localhost:8080/ws');
+        for (let i = 0; i < 100; i++) {
+            const ws = new WebSocket('ws://localhost:8080/ws');
 
-        ws.onopen = function (e) {
-            main();
-        };
+            ws.onopen = function (e) {
+                console.log(`${i} - connected`);
+                main();
+            };
 
-        function main() {
-            const str = 'hola'.repeat(10);
-            ws.send(str);
+            function main() {
+                const str = `hello - ${i}`;
+                ws.send(str);
+            }
+
+            ws.onclose = function (e) {
+                console.log('close', e);
+            };
+
+            ws.onerror = function (e) {
+                console.log(e);
+            };
+
+            ws.onmessage = function (e) {
+                console.log(e);
+            };
         }
-
-        ws.onclose = function (e) {
-            console.log('close', e);
-        };
-
-        ws.onerror = function (e) {
-            console.log(e);
-        };
-
-        ws.onmessage = function (e) {
-            console.log(e);
-        };
     </script>
 </html>

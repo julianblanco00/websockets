@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -32,6 +33,7 @@ const (
 type WsServer struct {
 	onConnect func(*Socket)
 	onError   func(error)
+	Conns     map[net.Conn]bool
 	addr      string
 }
 
@@ -115,7 +117,7 @@ func sendToClient(msg string, conn net.Conn) error {
 	return err
 }
 
-func (s *Socket) readFromSocket() {
+func (s *Socket) readFromSocket() int {
 	conn := s.conn
 	defer conn.Close()
 
@@ -129,7 +131,7 @@ func (s *Socket) readFromSocket() {
 
 		if firstByte == closeFrameByte {
 			sendCloseFrame(1001, "connection close requested", conn)
-			break
+			return closeFrameByte
 		}
 
 		// 8 bits
@@ -193,6 +195,8 @@ func (s *Socket) readFromSocket() {
 			s.onMessage(message)
 		}
 	}
+
+	return 0
 }
 
 func hijackConnection(w http.ResponseWriter) (net.Conn, error) {
@@ -259,13 +263,19 @@ func (ws *WsServer) handleHTTPConnection(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	ws.Conns[socket.conn] = true
+
 	if ws.onConnect != nil {
 		ws.onConnect(socket)
 	} else {
 		ws.retryOnConnect(socket)
 	}
 
-	socket.readFromSocket()
+	event := socket.readFromSocket()
+
+	if event == closeFrameByte {
+		delete(ws.Conns, socket.conn)
+	}
 }
 
 func (ws *WsServer) OnError(cb func(e error)) {
@@ -305,7 +315,8 @@ func (ws *WsServer) connect() {
 
 func Server(addr string) *WsServer {
 	ws := &WsServer{
-		addr: addr,
+		addr:  addr,
+		Conns: make(map[net.Conn]bool),
 	}
 	go ws.connect()
 	return ws
@@ -313,6 +324,30 @@ func Server(addr string) *WsServer {
 
 func (ws *WsServer) OnConnection(cb func(ws *Socket)) {
 	ws.onConnect = cb
+}
+
+func (ws *WsServer) Emit(msg string) {
+	var wg sync.WaitGroup
+	emit := make(chan struct{})
+
+	for conn := range ws.Conns {
+		wg.Add(1)
+
+		go func(c net.Conn) {
+			defer wg.Done()
+
+			<-emit
+
+			err := sendToClient(msg, conn)
+			if err != nil {
+				sendCloseFrame(1001, err.Error(), conn)
+			}
+		}(conn)
+	}
+
+	close(emit)
+
+	wg.Wait()
 }
 
 func (s *Socket) OnMessage(cb func(string)) {
